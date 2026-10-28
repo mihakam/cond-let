@@ -32,7 +32,7 @@
 (defmacro cond-let-test--with-deterministic-gensym (&rest body)
   (declare (indent 0))
   `(let ((prefixes '("anon" ":while-let*"
-                     ":while-let" ":if-let*"
+                     ":while-let" ":if-let*" "cond-let-if-let-ret"
                      ":cond-let*" ":cond-let"))
          (counter 0))
      (cl-letf
@@ -47,7 +47,7 @@
 (defmacro cond-let-test--macroexpansion (all value form expansion)
   (declare (indent 2))
   `(cond-let-test--with-deterministic-gensym
-     (should (equal (,(if all #'macroexpand-all #'macroexpand) ',form)
+     (should (equal (,(if all #'macroexpand-all #'macroexpand-1) ',form)
                     ',expansion))
      (let ((standard-output #'ignore))
        (should (equal ,form ,value)))))
@@ -80,20 +80,17 @@
       (t
        (list c d)))
 
-    (catch ':cond-let*1
-      (when (< 1 0)
-        (throw ':cond-let*1 1))
-      (cond-let--when-let*
-          ((b 2)
-           (_ (> b 2)))
-        (throw ':cond-let*1 b))
-      (let* ((c 3)
-             (d (+ c 1)))
-        (cond-let--when-let*
-            ((e 5)
-             (_ (> e (+ c d))))
-          (throw ':cond-let*1 (progn (print e) e)))
-        (list c d))))
+    (if (< 1 0)
+        1
+      (cond-let--if-let* ((b 2)
+                          (_ (> b 2)))
+          b
+        (let* ((c 3)
+               (d (+ c 1)))
+          (cond-let--if-let* ((e 5)
+                              (_ (> e (+ c d))))
+              (progn (print e) e)
+            (list c d))))))
 
   (cond-let-test--macroexpansion nil '(2 3)
     (cond-let*
@@ -107,15 +104,13 @@
        (message "4")
        b))
 
-    (catch ':cond-let*1
-      (cond-let--when-let ((a nil))
-        (throw ':cond-let*1 (- a)))
+    (cond-let--if-let ((a nil))
+        (- a)
       (let ((b 2))
-        (cond-let--when-let*
-            ((c 3)
-             (_ (> 3 b)))
-          (throw ':cond-let*1 (list b c)))
-        (progn (message "4") b))))
+        (cond-let--if-let* ((c 3)
+                            (_ (> 3 b)))
+            (list b c)
+          (progn (message "4") b)))))
 
   (cond-let-test--macroexpansion nil '(1 2 3)
     (cond-let*
@@ -126,14 +121,14 @@
       ((= (+ a b) d)
        (list a b d)))
 
-    (catch ':cond-let*1
-      (let* ((a 1)
-             (b 2))
-        (when (> 3 (+ a b))
-          (throw ':cond-let*1 'c))
+    (let* ((a 1)
+           (b 2))
+      (if (> 3 (+ a b))
+          'c
         (let ((d 3))
-          (when (= (+ a b) d)
-            (throw ':cond-let*1 (list a b d))))))))
+          (if (= (+ a b) d)
+              (list a b d)
+            nil))))))
 
 (ert-deftest cond-let-test--102-expand--cond-let ()
   (cond-let-test--macroexpansion nil '(nil clause nil)
@@ -147,18 +142,13 @@
       ((null t))
       (b))
 
-    (catch ':cond-let1
-      (let ((a nil)
-            (b 'shared)
-            (c nil))
-        (cond-let--when-let
-            ((_ (eq a c))
-             (b 'clause))
-          (throw ':cond-let1 (list a b c)))
-        (let ((anon2 (null t)))
-          (when anon2
-            (throw ':cond-let1 anon2)))
-        b)))
+    (let ((a nil)
+          (b 'shared)
+          (c nil))
+      (cond-let--if-let ((_ (eq a c))
+                         (b 'clause))
+          (list a b c)
+        (or (null t) b))))
 
   (cond-let-test--macroexpansion nil 'shared
     (cond-let
@@ -169,14 +159,13 @@
       ((eq a 'shared)
        a))
 
-    (catch ':cond-let1
-      (let ((a 'shared))
-        (cond-let--when-let
-            ((a 'clause)
-             (b nil))
-          (throw ':cond-let1 (list a b)))
-        (when (eq a 'shared)
-          (throw ':cond-let1 a))))))
+    (let ((a 'shared))
+      (cond-let--if-let ((a 'clause)
+                         (b nil))
+          (list a b)
+        (if (eq a 'shared)
+            a
+          nil)))))
 
 ;;; And
 
@@ -295,19 +284,17 @@
           (+ $ 2)
           (+ $ 3))
 
-    (let* (($ (+ 0 1))
-           ($ (and $ (+ $ 2))))
-      (and $
-           (+ $ 3))))
+    (and$ (+ 0 1)
+          (+ $ 2)
+          (+ $ 3)))
 
   (cond-let-test--macroexpansion nil 4
 
     (and> (+ 1 1)
           (+ $ 2))
 
-    (let (($ (+ 1 1)))
-      (and $
-           (+ $ 2)))))
+    (and$ (+ 1 1)
+          (+ $ 2))))
 
 (ert-deftest cond-let-test--107-expand--thread$ ()
   (cond-let-test--macroexpansion nil 6
@@ -339,13 +326,15 @@
       (print 3)
       4)
 
-    (catch ':if-let*1
-      (let* ((a 1)
-             (b (and a 2)))
-        (when b
-          (throw ':if-let*1 (list a b))))
-      (print 3)
-      4)))
+    (let (cond-let-if-let-ret1)
+      (if (let* ((a 1)
+                 (b (and a 2)))
+            (when b
+              (setq cond-let-if-let-ret1 (list a b))
+              t))
+          cond-let-if-let-ret1
+        (print 3)
+        4))))
 
 (ert-deftest cond-let-test--109-expand--if-let ()
   (cond-let-test--macroexpansion nil '(1 2)
@@ -499,13 +488,12 @@
                    (_ (> a 0)))
         (print a))
 
-      (catch ':while-let*2
-        (while t
+      (while
           (let* ((a     (setq n (1- n)))
                  (anon1 (and a (> a 0))))
-            (if anon1
-                (print a)
-              (throw ':while-let*2 nil))))))))
+            (when anon1
+              (print a)
+              t))))))
 
 (ert-deftest cond-let-test--114-expand--while-let ()
   (let ((n 5))
@@ -514,14 +502,13 @@
                   (_ (> n 0)))
         (print a))
 
-      (catch ':while-let2
-        (while t
+      (while
           (let (anon1)
-            (if (and (setq anon1 (setq n (1- n)))
-                     (> n 0))
-                (let ((a anon1))
-                  (print a))
-              (throw ':while-let2 nil))))))))
+            (when (and (setq anon1 (setq n (1- n)))
+                       (> n 0))
+              (let ((a anon1))
+                (print a))
+              t))))))
 
 
 ;;; Shorthands

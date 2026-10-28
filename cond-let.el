@@ -90,43 +90,41 @@
 ;;; Code:
 ;;; Cond
 
-(defun cond-let--prepare-clauses (tag sequential clauses)
+(defun cond-let--prepare-clauses (sequential clauses)
   "Used by macros `cond-let*' and `cond-let'."
   (let (body)
     (dolist (clause (nreverse clauses))
       (cond
         ((vectorp clause)
          (setq body
-               `((,(if (and sequential (length> clause 1)) 'let* 'let)
-                  ,(mapcar (lambda (vec) (append vec nil)) clause)
-                  ,@body))))
+               `(,(if (and sequential (length> clause 1)) 'let* 'let)
+                 ,(mapcar (lambda (vec) (append vec nil)) clause)
+                 ,body)))
         ((let (varlist)
            (while (vectorp (car clause))
              (push (append (pop clause) nil) varlist))
-           (push (cond
+           (setq body
+                 (cond
                    (varlist
                     `(,(pcase (list (and body t)
                                     (and sequential (length> varlist 1)))
-                         ('(t   t ) 'cond-let--when-let*)
-                         (`(t   ,_) 'cond-let--when-let)
+                         ('(t   t ) 'cond-let--if-let*)
+                         (`(t   ,_) 'cond-let--if-let)
                          ('(nil t ) 'cond-let--and-let*)
                          (`(nil ,_) 'cond-let--and-let))
                       ,(nreverse varlist)
-                      ,(if body
-                           `(throw ',tag ,(macroexp-progn clause))
-                         (macroexp-progn clause))))
+                      ,(macroexp-progn clause)
+                      ,body))
                    ((length= clause 1)
                     (if body
-                        (let ((a (gensym "anon")))
-                          `(let ((,a ,(car clause)))
-                             (when ,a (throw ',tag ,a))))
+                        `(or ,(car clause) ,body)
                       (car clause)))
                    ((and (eq (car clause) t) (not body))
                     (macroexp-progn (cdr clause)))
                    (t
-                    `(when ,(pop clause)
-                       (throw ',tag ,(macroexp-progn clause)))))
-                 body)))))
+                    `(if ,(pop clause)
+                         ,(macroexp-progn clause)
+                       ,body))))))))
     body))
 
 (defmacro cond-let* (&rest clauses)
@@ -163,9 +161,7 @@ to the next clause."
                           (vector &rest (vector symbolp form))
                           ([&rest (vector symbolp form)] body)
                           (form body)])))
-  (let ((tag (gensym ":cond-let*")))
-    `(catch ',tag
-       ,@(cond-let--prepare-clauses tag t clauses))))
+  (cond-let--prepare-clauses t clauses))
 
 (defmacro cond-let (&rest clauses)
   "Try each clause until one succeeds.
@@ -199,9 +195,7 @@ all SYMBOLs, even if a VALUEFORM yields nil.  Always proceed to the
 next clause."
   (declare (indent 0)
            (debug cond-let*))
-  (let ((tag (gensym ":cond-let")))
-    `(catch ',tag
-       ,@(cond-let--prepare-clauses tag nil clauses))))
+  (cond-let--prepare-clauses nil clauses))
 
 ;;; Common
 
@@ -368,12 +362,14 @@ bindings from VARLIST do _not_ extend to the ELSE forms.
            (debug ((&rest (symbolp form)) form body)))
   (pcase-let ((`(,varlist ,lastvar)
                (cond-let--prepare-varlist varlist))
-              (tag (gensym ":if-let*")))
-    `(catch ',tag
-       (let* ,varlist
-         (when ,lastvar
-           (throw ',tag ,then)))
-       ,@else)))
+              (ret-sym (gensym "cond-let-if-let-ret")))
+    `(let (,ret-sym)
+       (if (let* ,varlist
+             (when ,lastvar
+               (setq ,ret-sym ,then)
+               t))
+           ,ret-sym
+         ,@else))))
 
 (defmacro cond-let--if-let (varlist then &rest else)
   "Bind variables according to VARLIST and evaluate THEN or ELSE.
@@ -496,14 +492,12 @@ BODY can be zero or more expressions.
   (declare (indent 1)
            (debug ((&rest (symbolp form)) body)))
   (pcase-let ((`(,varlist ,lastvar)
-               (cond-let--prepare-varlist varlist))
-              (tag (gensym ":while-let*")))
-    `(catch ',tag
-       (while t
+               (cond-let--prepare-varlist varlist)))
+    `(while
          (let* ,varlist
-           (if ,lastvar
-               ,(macroexp-progn body)
-             (throw ',tag nil)))))))
+           (when ,lastvar
+             ,@body
+             t)))))
 
 (defmacro cond-let--while-let (varlist bodyform &rest body)
   "Bind variables according to VARLIST, conditionally evaluate BODY, and repeat.
@@ -524,23 +518,20 @@ BODY can be one or more expressions.
   (declare (indent 1)
            (debug ((&rest (symbolp form)) form body)))
   (pcase-let ((`(,anon ,set ,bind ,lastvar)
-               (cond-let--prepare-varforms varlist))
-              (tag (gensym ":while-let")))
+               (cond-let--prepare-varforms varlist)))
     (cond (anon
-           `(catch ',tag
-              (while t
+           `(while
                 (let ,anon
-                  (if (and ,@set)
-                      (let ,bind
-                        ,bodyform ,@body)
-                    (throw ',tag nil))))))
+                  (when (and ,@set)
+                    (let ,bind
+                      ,bodyform ,@body)
+                    t))))
           (t
-           `(catch ',tag
-              (while t
+           `(while
                 (let ,bind
-                  (if ,lastvar
-                      ,(macroexp-progn (cons bodyform body))
-                    (throw ',tag nil)))))))))
+                  (when ,lastvar
+                    ,bodyform ,@body
+                    t)))))))
 
 ;;; Font-Lock
 
